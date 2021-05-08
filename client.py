@@ -11,17 +11,21 @@ class RPCClient:
     def __init__(self):
         self.process = sp.Popen(['clangd-11'], stdout=sp.PIPE, stdin=sp.PIPE)
         fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+        self.incoming_log = open('incoming.log', 'wb')
+        self.outgoing_log = open('outgoing.log', 'wb')
         self.buffer = bytearray()
         self.outgoing = Queue()
-        self.incoming = Queue()
         self.terminating = False
         self.thread = threading.Thread(target=self.rpc_thread)
+        self.thread.start()
 
     def send_message(self, msg: Message):
         self.outgoing.put(msg)
 
     def shutdown(self):
         if not self.terminating:
+            self.process.stdin.close()
+            self.process.wait(3)
             self.terminating = True
             self.thread.join()
 
@@ -30,13 +34,20 @@ class RPCClient:
             wait = True
             data = self.process.stdout.read(65536)
             if data:
+                self.incoming_log.write(data)
+                self.incoming_log.flush()
                 wait = False
                 self.buffer.extend(data)
                 self.process_buffer()
             while not self.outgoing.empty():
                 wait = False
                 msg = self.outgoing.get()
-                self.process.stdin.write(serialize(msg))
+                if not self.terminating:
+                    data = serialize(msg.root)
+                    self.outgoing_log.write(data)
+                    self.outgoing_log.flush()
+                    self.process.stdin.write(data)
+                    self.process.stdin.flush()
             if wait:
                 time.sleep(0.01)
 
@@ -54,9 +65,9 @@ class RPCClient:
             msg = self.buffer[end_pos + 4:end_pos + 4 + length]
             del self.buffer[:end_pos + 4 + length]
             text = msg.decode('utf-8')
-            self.incoming.put(json.loads(text))
+            self.process_incoming(json.loads(text))
 
-    def process_incoming(self):
+    def process_incoming(self, msg):
         raise RuntimeError("Not implemented")
 
 
@@ -64,25 +75,30 @@ class LSPClient(RPCClient):
     def __init__(self, root_folder):
         super().__init__()
         self.capabilities = {}
+        self.initialized = False
         msg = InitMessage(root_folder)
         self.transactions: Dict[int, callable] = {msg.message_id: self.init_response}
         self.send_message(msg)
         self.diagnostic_callback = None
+        wait_count = 0
+        while not self.initialized:
+            wait_count += 1
+            time.sleep(0.1)
+            if wait_count > 20:
+                raise RuntimeError("Failed to initialize")
 
     def set_diagnostic_callback(self, callback: callable):
         self.diagnostic_callback = callback
 
-    def process_incoming(self):
-        while not self.incoming.empty():
-            msg = self.incoming.get()
-            if 'id' in msg:
-                message_id = msg.get('id')
-                if message_id in self.transactions:
-                    handler = self.transactions.get(message_id)
-                    del self.transactions[message_id]
-                    handler(msg)
-            else:
-                self.generic_handler(msg)
+    def process_incoming(self, msg):
+        if 'id' in msg:
+            message_id = msg.get('id')
+            if message_id in self.transactions:
+                handler = self.transactions.get(message_id)
+                del self.transactions[message_id]
+                handler(msg)
+        else:
+            self.generic_handler(msg)
 
     def generic_handler(self, msg):
         if 'method' in msg:
@@ -93,6 +109,7 @@ class LSPClient(RPCClient):
     def init_response(self, msg):
         self.capabilities = msg.get('result').get('capabilities')
         self.send_message(InitializedMessage())
+        self.initialized = True
 
     def open_source_file(self, path):
         file = get_file(path)
