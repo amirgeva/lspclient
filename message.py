@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 
 def serialize(root: dict):
@@ -29,6 +30,7 @@ class FileContent:
         self.version += 1
 
 
+_files_lock = threading.Lock()
 _last_id = 0
 _files = {}
 
@@ -40,11 +42,12 @@ def generate_id() -> int:
 
 
 def get_file(path: str):
-    if path in _files:
-        return _files.get(path)
-    file = FileContent(path)
-    _files[path] = file
-    return file
+    with _files_lock:
+        if path in _files:
+            return _files.get(path)
+        file = FileContent(path)
+        _files[path] = file
+        return file
 
 
 class Message:
@@ -57,7 +60,8 @@ class Message:
 class QueryMessage(Message):
     def __init__(self, method: str):
         super().__init__(method)
-        self.root['id'] = generate_id()
+        self.message_id = generate_id()
+        self.root['id'] = self.message_id
 
 
 class InitMessage(QueryMessage):
