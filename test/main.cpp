@@ -7,16 +7,16 @@ public:
 	{
 		std::cout << "Base\n";
 	}
-	
+
 	~Base()
 	{
 		std::cout << "~Base\n";
 	}
-	
+
 	void test() { std::cout << "Test\n";}
-	
+
 	int square(int a) { return a*a; }
-	
+
 };
 
 class Derived : public Base
