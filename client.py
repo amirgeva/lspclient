@@ -1,6 +1,7 @@
 import subprocess as sp
 import fcntl
 import time
+import shutil
 from queue import Queue
 from typing import Dict
 from .message import *
@@ -71,8 +72,10 @@ class RPCClient:
 
 
 class LSPClient(RPCClient):
-    def __init__(self, root_folder):
+    def __init__(self, root_folder, compile_commands_path: str = ''):
         super().__init__()
+        if compile_commands_path:
+            shutil.copy(compile_commands_path, root_folder)
         self.capabilities = {}
         self.initialized = False
         msg = InitMessage(root_folder)

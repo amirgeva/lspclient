@@ -60,7 +60,7 @@ class Message:
 class QueryMessage(Message):
     def __init__(self, method: str):
         super().__init__(method)
-        self.message_id = generate_id()
+        self.message_id: int = generate_id()
         self.root['id'] = self.message_id
 
 
