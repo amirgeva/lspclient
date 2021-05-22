@@ -3,13 +3,12 @@ import fcntl
 import time
 from queue import Queue
 from typing import Dict
-
-from message import *
+from .message import *
 
 
 class RPCClient:
     def __init__(self):
-        self.process = sp.Popen(['clangd-11'], stdout=sp.PIPE, stdin=sp.PIPE)
+        self.process = sp.Popen(['clangd-11'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
         fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
         self.incoming_log = open('incoming.log', 'wb')
         self.outgoing_log = open('outgoing.log', 'wb')
@@ -80,6 +79,7 @@ class LSPClient(RPCClient):
         self.transactions: Dict[int, callable] = {msg.message_id: self.init_response}
         self.send_message(msg)
         self.diagnostic_callback = None
+        self._open_files=set()
         wait_count = 0
         while not self.initialized:
             wait_count += 1
@@ -112,12 +112,17 @@ class LSPClient(RPCClient):
         self.initialized = True
 
     def open_source_file(self, path):
-        file = get_file(path)
-        self.send_message(DidOpenMessage(path))
-        return file
+        if path not in self._open_files:
+            self._open_files.add(path)
+            file = get_file(path)
+            self.send_message(DidOpenMessage(path))
+            return file
+        return None
 
     def close_source_file(self, path):
-        self.send_message(DidCloseMessage(path))
+        if path in self._open_files:
+            self._open_files.remove(path)
+            self.send_message(DidCloseMessage(path))
 
     def modify_source_file(self, path, content):
         file = get_file(path)
