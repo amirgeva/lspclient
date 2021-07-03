@@ -30,26 +30,29 @@ class RPCClient:
             self.thread.join()
 
     def rpc_thread(self):
-        while not self.terminating:
-            wait = True
-            data = self.process.stdout.read(65536)
-            if data:
-                self.incoming_log.write(data)
-                self.incoming_log.flush()
-                wait = False
-                self.buffer.extend(data)
-                self.process_buffer()
-            while not self.outgoing.empty():
-                wait = False
-                msg = self.outgoing.get()
-                if not self.terminating:
-                    data = serialize(msg.root)
-                    self.outgoing_log.write(data)
-                    self.outgoing_log.flush()
-                    self.process.stdin.write(data)
-                    self.process.stdin.flush()
-            if wait:
-                time.sleep(0.01)
+        try:
+            while not self.terminating:
+                wait = True
+                data = self.process.stdout.read(65536)
+                if data:
+                    self.incoming_log.write(data)
+                    self.incoming_log.flush()
+                    wait = False
+                    self.buffer.extend(data)
+                    self.process_buffer()
+                while not self.outgoing.empty():
+                    wait = False
+                    msg = self.outgoing.get()
+                    if not self.terminating:
+                        data = serialize(msg.root)
+                        self.outgoing_log.write(data)
+                        self.outgoing_log.flush()
+                        self.process.stdin.write(data)
+                        self.process.stdin.flush()
+                if wait:
+                    time.sleep(0.01)
+        except ValueError:
+            pass
 
     def process_buffer(self):
         while True:
@@ -82,7 +85,7 @@ class LSPClient(RPCClient):
         self.transactions: Dict[int, callable] = {msg.message_id: self.init_response}
         self.send_message(msg)
         self.diagnostic_callback = None
-        self._open_files=set()
+        self._open_files = set()
         wait_count = 0
         while not self.initialized:
             wait_count += 1
@@ -113,6 +116,9 @@ class LSPClient(RPCClient):
         self.capabilities = msg.get('result').get('capabilities')
         self.send_message(InitializedMessage())
         self.initialized = True
+
+    def is_open_file(self, path):
+        return path in self._open_files
 
     def open_source_file(self, path):
         if path not in self._open_files:
