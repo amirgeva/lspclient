@@ -131,3 +131,10 @@ class SignatureHelpMessage(PositionalMessage):
 class DefinitionMessage(PositionalMessage):
     def __init__(self, path: str, row: int, col: int):
         super().__init__('textDocument/definition', path, row, col)
+
+
+class ColoringMessage(QueryMessage):
+    def __init__(self, path: str):
+        super().__init__('textDocument/semanticTokens/full')
+        file: FileContent = get_file(path)
+        self.params['textDocument'] = {'uri': file.uri}

@@ -3,16 +3,20 @@ import fcntl
 import time
 import shutil
 from queue import Queue
-from typing import Dict
+from typing import Dict, List, Tuple
 from .message import *
+
+
+def pretty(msg):
+    return json.dumps(msg, indent=4, sort_keys=True)
 
 
 class RPCClient:
     def __init__(self):
-        self.process = sp.Popen(['clangd-11'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
+        self.process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
+        # self.process = sp.Popen(['ccls'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
         fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
-        self.incoming_log = open('incoming.log', 'wb')
-        self.outgoing_log = open('outgoing.log', 'wb')
+        self.rpc_log = open('rpc.log', 'w')
         self.buffer = bytearray()
         self.outgoing = Queue()
         self.terminating = False
@@ -20,6 +24,7 @@ class RPCClient:
         self.thread.start()
 
     def send_message(self, msg: Message):
+        self.rpc_log.write('\n>>>\n' + pretty(msg.root))
         self.outgoing.put(msg)
 
     def shutdown(self):
@@ -35,8 +40,9 @@ class RPCClient:
                 wait = True
                 data = self.process.stdout.read(65536)
                 if data:
-                    self.incoming_log.write(data)
-                    self.incoming_log.flush()
+                    # self.rpc_log.write(b'\n<<<\n')
+                    # self.rpc_log.write(data)
+                    # self.rpc_log.flush()
                     wait = False
                     self.buffer.extend(data)
                     self.process_buffer()
@@ -45,8 +51,9 @@ class RPCClient:
                     msg = self.outgoing.get()
                     if not self.terminating:
                         data = serialize(msg.root)
-                        self.outgoing_log.write(data)
-                        self.outgoing_log.flush()
+                        # self.rpc_log.write(b'\n>>>\n')
+                        # self.rpc_log.write(data)
+                        # self.rpc_log.flush()
                         self.process.stdin.write(data)
                         self.process.stdin.flush()
                 if wait:
@@ -68,7 +75,9 @@ class RPCClient:
             msg = self.buffer[end_pos + 4:end_pos + 4 + length]
             del self.buffer[:end_pos + 4 + length]
             text = msg.decode('utf-8')
-            self.process_incoming(json.loads(text))
+            jmsg = json.loads(text)
+            self.rpc_log.write('\n<<<\n' + pretty(jmsg) + '\n')
+            self.process_incoming(jmsg)
 
     def process_incoming(self, msg):
         raise RuntimeError("Not implemented")
@@ -86,6 +95,8 @@ class LSPClient(RPCClient):
         self.send_message(msg)
         self.diagnostic_callback = None
         self._open_files = set()
+        self._semantic_tokens: List[str] = []
+        self._semantic_modifiers: List[str] = []
         wait_count = 0
         while not self.initialized:
             wait_count += 1
@@ -112,8 +123,17 @@ class LSPClient(RPCClient):
             if method == 'textDocument/publishDiagnostics' and self.diagnostic_callback is not None:
                 self.diagnostic_callback(msg.get('params'))
 
+    def handle_capabilities(self):
+        if 'semanticTokensProvider' in self.capabilities:
+            semantic = self.capabilities.get('semanticTokensProvider')
+            if 'legend' in semantic:
+                legend = semantic.get('legend')
+                self._semantic_modifiers = legend.get("tokenModifiers")
+                self._semantic_tokens = legend.get("tokenTypes")
+
     def init_response(self, msg):
         self.capabilities = msg.get('result').get('capabilities')
+        self.handle_capabilities()
         self.send_message(InitializedMessage())
         self.initialized = True
 
@@ -142,3 +162,11 @@ class LSPClient(RPCClient):
         msg = CompletionMessage(path, row, col)
         self.transactions[msg.message_id] = handler
         self.send_message(msg)
+
+    def request_coloring(self, path: str, handler: callable):
+        msg = ColoringMessage(path)
+        self.transactions[msg.message_id] = handler
+        self.send_message(msg)
+
+    def get_coloring_legend(self) -> Tuple[List[str], List[str]]:
+        return self._semantic_tokens, self._semantic_modifiers
