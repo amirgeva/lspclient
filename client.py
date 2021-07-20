@@ -25,6 +25,7 @@ class RPCClient:
 
     def send_message(self, msg: Message):
         self.rpc_log.write('\n>>>\n' + pretty(msg.root))
+        self.rpc_log.flush()
         self.outgoing.put(msg)
 
     def shutdown(self):
@@ -40,9 +41,6 @@ class RPCClient:
                 wait = True
                 data = self.process.stdout.read(65536)
                 if data:
-                    # self.rpc_log.write(b'\n<<<\n')
-                    # self.rpc_log.write(data)
-                    # self.rpc_log.flush()
                     wait = False
                     self.buffer.extend(data)
                     self.process_buffer()
@@ -51,9 +49,6 @@ class RPCClient:
                     msg = self.outgoing.get()
                     if not self.terminating:
                         data = serialize(msg.root)
-                        # self.rpc_log.write(b'\n>>>\n')
-                        # self.rpc_log.write(data)
-                        # self.rpc_log.flush()
                         self.process.stdin.write(data)
                         self.process.stdin.flush()
                 if wait:
@@ -77,6 +72,7 @@ class RPCClient:
             text = msg.decode('utf-8')
             jmsg = json.loads(text)
             self.rpc_log.write('\n<<<\n' + pretty(jmsg) + '\n')
+            self.rpc_log.flush()
             self.process_incoming(jmsg)
 
     def process_incoming(self, msg):
@@ -91,7 +87,7 @@ class LSPClient(RPCClient):
         self.capabilities = {}
         self.initialized = False
         msg = InitMessage(root_folder)
-        self.transactions: Dict[int, callable] = {msg.message_id: self.init_response}
+        self.transactions: Dict[str, callable] = {msg.message_id: self.init_response}
         self.send_message(msg)
         self.diagnostic_callback = None
         self._open_files = set()
@@ -153,18 +149,23 @@ class LSPClient(RPCClient):
             self._open_files.remove(path)
             self.send_message(DidCloseMessage(path))
 
-    def modify_source_file(self, path, content):
+    def modify_source_line(self, path: str, row: int, text: str):
+        file = get_file(path)
+        if file.update_content_line(row, text):
+            self.send_message(DidChangeMessage(path, [row]))
+
+    def modify_source_file(self, path: str, content: str):
         file = get_file(path)
         file.update_content(content)
-        self.send_message(DidChangeMessage(path))
+        self.send_message(DidChangeMessage(path, []))
 
     def request_completion(self, path: str, row: int, col: int, handler: callable):
         msg = CompletionMessage(path, row, col)
         self.transactions[msg.message_id] = handler
         self.send_message(msg)
 
-    def request_coloring(self, path: str, handler: callable):
-        msg = ColoringMessage(path)
+    def request_coloring(self, path: str, prev_id: str, handler: callable):
+        msg = ColoringMessage(path, prev_id)
         self.transactions[msg.message_id] = handler
         self.send_message(msg)
 
