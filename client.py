@@ -30,8 +30,11 @@ class RPCClient:
 
     def shutdown(self):
         if not self.terminating:
-            self.process.stdin.close()
-            self.process.wait(3)
+            try:
+                self.process.stdin.close()
+                self.process.wait(3)
+            except sp.TimeoutExpired:
+                pass
             self.terminating = True
             self.thread.join()
 
