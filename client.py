@@ -3,7 +3,7 @@ import fcntl
 import time
 import shutil
 from queue import Queue
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 from .message import *
 
 
@@ -23,9 +23,16 @@ class RPCClient:
         self.thread = threading.Thread(target=self.rpc_thread)
         self.thread.start()
 
-    def send_message(self, msg: Message):
-        self.rpc_log.write('\n>>>\n' + pretty(msg.root))
+    def add_log(self, out: bool, text: str):
+        out_prefix = '>>>' if out else '<<<'
+        prefix = f'\n{out_prefix}  {time.time()}\n'
+        self.rpc_log.write(prefix)
+        self.rpc_log.write(text)
+        self.rpc_log.write('\n')
         self.rpc_log.flush()
+
+    def send_message(self, msg: Message):
+        self.add_log(True, pretty(msg.root))
         self.outgoing.put(msg)
 
     def shutdown(self):
@@ -74,8 +81,7 @@ class RPCClient:
             del self.buffer[:end_pos + 4 + length]
             text = msg.decode('utf-8')
             jmsg = json.loads(text)
-            self.rpc_log.write('\n<<<\n' + pretty(jmsg) + '\n')
-            self.rpc_log.flush()
+            self.add_log(False, pretty(jmsg))
             self.process_incoming(jmsg)
 
     def process_incoming(self, msg):
