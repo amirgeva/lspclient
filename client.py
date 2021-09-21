@@ -180,3 +180,8 @@ class LSPClient(RPCClient):
 
     def get_coloring_legend(self) -> Tuple[List[str], List[str]]:
         return self._semantic_tokens, self._semantic_modifiers
+
+    def request_definition(self, path: str, row: int, col: int, handler: callable):
+        msg = DefinitionMessage(path, row, col)
+        self.transactions[msg.message_id] = handler
+        self.send_message(msg)
