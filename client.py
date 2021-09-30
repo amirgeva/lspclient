@@ -2,6 +2,7 @@ import subprocess as sp
 import fcntl
 import time
 import shutil
+import signal
 from queue import Queue
 from typing import Dict, List, Tuple
 from .message import *
@@ -11,11 +12,16 @@ def pretty(msg):
     return json.dumps(msg, indent=4, sort_keys=True)
 
 
+def default_sigpipe():
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+
 class RPCClient:
     def __init__(self):
-        self.process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
+        self.process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE) # , preexec_fn=default_sigpipe)
         # self.process = sp.Popen(['ccls'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
         fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+        fcntl.fcntl(self.process.stderr.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
         self.rpc_log = open('rpc.log', 'w')
         self.buffer = bytearray()
         self.outgoing = Queue()
@@ -39,11 +45,19 @@ class RPCClient:
             self.thread.join()
 
     def rpc_thread(self):
+        fb = open('rpc_out.log','wb')
+        fi = open('rpc_in.log','wb')
         try:
             while not self.terminating:
                 wait = True
                 data = self.process.stdout.read(65536)
+                err_data=self.process.stderr.read(65536)
+                if err_data:
+                    fi.write(err_data)
+                    fi.flush()
                 if data:
+                    fi.write(data)
+                    fi.flush()
                     wait = False
                     self.buffer.extend(data)
                     self.process_buffer()
@@ -52,6 +66,8 @@ class RPCClient:
                     msg = self.outgoing.get()
                     if not self.terminating:
                         data = serialize(msg.root)
+                        fb.write(data)
+                        fb.write(b'\n')
                         self.process.stdin.write(data)
                         self.process.stdin.flush()
                 if wait:
