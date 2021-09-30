@@ -109,7 +109,18 @@ class InitMessage(QueryMessage):
         self.params['rootUri'] = uri(root_folder)
         self.params['processId'] = os.getpid()
         self.params["capabilities"] = {
-            "textDocument": {"completion": {"completionItem": {"documentationFormat": ["plaintext"]}}}}
+            "textDocument": {
+                "completion": {
+                    "completionItem": {
+                        "documentationFormat": ["plaintext"]
+                    }
+                },
+                "definition": {
+                    "dynamicRegistration": True,
+                    "linkSupport": True
+                }
+            }
+        }
 
 
 class InitializedMessage(Message):

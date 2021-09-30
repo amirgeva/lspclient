@@ -4,7 +4,7 @@ import time
 import shutil
 import signal
 from queue import Queue
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 from .message import *
 
 
@@ -29,9 +29,16 @@ class RPCClient:
         self.thread = threading.Thread(target=self.rpc_thread)
         self.thread.start()
 
-    def send_message(self, msg: Message):
-        self.rpc_log.write('\n>>>\n' + pretty(msg.root))
+    def add_log(self, out: bool, text: str):
+        out_prefix = '>>>' if out else '<<<'
+        prefix = f'\n{out_prefix}  {time.time()}\n'
+        self.rpc_log.write(prefix)
+        self.rpc_log.write(text)
+        self.rpc_log.write('\n')
         self.rpc_log.flush()
+
+    def send_message(self, msg: Message):
+        self.add_log(True, pretty(msg.root))
         self.outgoing.put(msg)
 
     def shutdown(self):
@@ -90,8 +97,7 @@ class RPCClient:
             del self.buffer[:end_pos + 4 + length]
             text = msg.decode('utf-8')
             jmsg = json.loads(text)
-            self.rpc_log.write('\n<<<\n' + pretty(jmsg) + '\n')
-            self.rpc_log.flush()
+            self.add_log(False, pretty(jmsg))
             self.process_incoming(jmsg)
 
     def process_incoming(self, msg):
@@ -190,3 +196,8 @@ class LSPClient(RPCClient):
 
     def get_coloring_legend(self) -> Tuple[List[str], List[str]]:
         return self._semantic_tokens, self._semantic_modifiers
+
+    def request_definition(self, path: str, row: int, col: int, handler: callable):
+        msg = DefinitionMessage(path, row, col)
+        self.transactions[msg.message_id] = handler
+        self.send_message(msg)
