@@ -3,8 +3,10 @@ import fcntl
 import time
 import shutil
 import signal
+import re
 from queue import Queue
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, IO
+from .binarylog import BinaryLog
 from .message import *
 
 
@@ -16,67 +18,110 @@ def default_sigpipe():
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
+header_pattern = r'Content-Length: (\d+)\W'
+msg_log: Optional[IO] = None  # open('msg.log', 'w')
+
+
+def read_message(stream):
+    header_data = stream.read(28)
+    if header_data is None or len(header_data) == 0:
+        return None
+    m = re.match(header_pattern, header_data.decode('utf-8'))
+    if not m:
+        raise RuntimeError("Invalid packet")
+    header_size = m.regs[0][1] + 3
+    if msg_log:
+        msg_log.write(f'header_size={header_size} ')
+    data_size = int(m.groups()[0])
+    orig_data_size = data_size
+    if msg_log:
+        msg_log.write(f'data_size={data_size}\n')
+    accumulator = bytearray(header_data)
+    if len(header_data) > header_size:
+        data_size -= len(header_data) - header_size
+    while data_size > 0:
+        cur = stream.read(data_size)
+        if msg_log:
+            msg_log.write(f'read {len(cur)} bytes\n')
+        accumulator.extend(cur)
+        data_size -= len(cur)
+    res = bytes(accumulator)
+    if msg_log:
+        notes = ''
+        if len(res) != (header_size + orig_data_size):
+            notes = '+++++++++++++++++++++++++++++'
+        msg_log.write(
+            f'Total message {len(res)} vs {header_size}+{orig_data_size} = {header_size + orig_data_size} {notes}\n')
+        msg_log.flush()
+    return res
+
+
 class RPCClient:
     def __init__(self):
-        self.process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE) # , preexec_fn=default_sigpipe)
+        self._process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE,
+                                 stderr=sp.PIPE)  # , preexec_fn=default_sigpipe)
         # self.process = sp.Popen(['ccls'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
-        fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
-        fcntl.fcntl(self.process.stderr.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
-        self.rpc_log = open('rpc.log', 'w')
-        self.buffer = bytearray()
-        self.outgoing = Queue()
-        self.terminating = False
-        self.thread = threading.Thread(target=self.rpc_thread)
-        self.thread.start()
+        fcntl.fcntl(self._process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+        fcntl.fcntl(self._process.stderr.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+        self._rpc_log = open('rpc.log', 'w')
+        self._bin_log = BinaryLog('rpc_session.bin')
+        self._buffer = bytearray()
+        self._outgoing = Queue()
+        self._terminating = False
+        self._thread = threading.Thread(target=self.rpc_thread)
+        self._thread.start()
 
     def add_log(self, out: bool, text: str):
         out_prefix = '>>>' if out else '<<<'
         prefix = f'\n{out_prefix}  {time.time()}\n'
-        self.rpc_log.write(prefix)
-        self.rpc_log.write(text)
-        self.rpc_log.write('\n')
-        self.rpc_log.flush()
+        self._rpc_log.write(prefix)
+        self._rpc_log.write(text)
+        self._rpc_log.write('\n')
+        self._rpc_log.flush()
 
     def send_message(self, msg: Message):
-        self.add_log(True, pretty(msg.root))
-        self.outgoing.put(msg)
+        # self.add_log(True, pretty(msg.root))
+        self._outgoing.put(msg)
 
     def shutdown(self):
-        if not self.terminating:
+        if not self._terminating:
             try:
-                self.process.stdin.close()
-                self.process.wait(3)
+                self._process.stdin.close()
+                self._process.wait(3)
             except sp.TimeoutExpired:
                 pass
-            self.terminating = True
-            self.thread.join()
+            self._terminating = True
+            self._thread.join()
 
     def rpc_thread(self):
-        fb = open('rpc_out.log','wb')
-        fi = open('rpc_in.log','wb')
+        fb = open('rpc_out.log', 'wb')
+        fi = open('rpc_in.log', 'wb')
         try:
-            while not self.terminating:
+            while not self._terminating:
                 wait = True
-                data = self.process.stdout.read(65536)
-                err_data=self.process.stderr.read(65536)
-                if err_data:
-                    fi.write(err_data)
-                    fi.flush()
+                data = self._process.stderr.read(65536)
+                if data:
+                    self.add_log(False, data.decode('utf-8'))
+                data = read_message(self._process.stdout)
                 if data:
                     fi.write(data)
                     fi.flush()
                     wait = False
-                    self.buffer.extend(data)
+                    if msg_log:
+                        msg_log.write(f'Writing to bin log {len(data)} incoming bytes\n')
+                    self._bin_log.add(data, 0)
+                    self._buffer.extend(data)
                     self.process_buffer()
-                while not self.outgoing.empty():
+                while not self._outgoing.empty():
                     wait = False
-                    msg = self.outgoing.get()
-                    if not self.terminating:
+                    msg = self._outgoing.get()
+                    if not self._terminating:
                         data = serialize(msg.root)
-                        fb.write(data)
-                        fb.write(b'\n')
-                        self.process.stdin.write(data)
-                        self.process.stdin.flush()
+                        if msg_log:
+                            msg_log.write(f'Writing to bin log {len(data)} outgoing bytes\n')
+                        self._bin_log.add(data, 1)
+                        self._process.stdin.write(data)
+                        self._process.stdin.flush()
                 if wait:
                     time.sleep(0.01)
         except ValueError:
@@ -84,21 +129,21 @@ class RPCClient:
 
     def process_buffer(self):
         while True:
-            pos = self.buffer.find(b'Content-Length: ')
+            pos = self._buffer.find(b'Content-Length: ')
             if pos < 0:
                 break
-            end_pos = self.buffer.find(b'\r\n\r\n', pos + 16)
+            end_pos = self._buffer.find(b'\r\n\r\n', pos + 16)
             if end_pos < 0:
                 break
-            length = int(self.buffer[pos + 16:end_pos].decode('ascii'))
-            if len(self.buffer) < (end_pos + 4 + length):
+            length = int(self._buffer[pos + 16:end_pos].decode('ascii'))
+            if len(self._buffer) < (end_pos + 4 + length):
                 break
-            msg = self.buffer[end_pos + 4:end_pos + 4 + length]
-            del self.buffer[:end_pos + 4 + length]
+            msg = self._buffer[end_pos + 4:end_pos + 4 + length]
+            del self._buffer[:end_pos + 4 + length]
             text = msg.decode('utf-8')
-            jmsg = json.loads(text)
-            self.add_log(False, pretty(jmsg))
-            self.process_incoming(jmsg)
+            json_msg = json.loads(text)
+            # self.add_log(False, pretty(json_msg))
+            self.process_incoming(json_msg)
 
     def process_incoming(self, msg):
         raise RuntimeError("Not implemented")
@@ -181,8 +226,8 @@ class LSPClient(RPCClient):
 
     def modify_source_file(self, path: str, content: str):
         file = get_file(path)
-        file.update_content(content)
-        self.send_message(DidChangeMessage(path, []))
+        if file.update_content(content):
+            self.send_message(DidChangeMessage(path, []))
 
     def request_completion(self, path: str, row: int, col: int, handler: callable):
         msg = CompletionMessage(path, row, col)

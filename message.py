@@ -59,13 +59,18 @@ class FileContent:
         return self._content[start:(end + 1)]
 
     def update_content(self, value):
+        content = ''
         if isinstance(value, str):
-            self._content = value.split('\n')
+            content = value.split('\n')
         elif isinstance(value, list):
-            self._content = value
+            content = value
         else:
             raise RuntimeError("Invalid content")
+        if content == self._content:
+            return False
+        self._content = content
         self._version += 1
+        return True
 
 
 _files_lock = threading.Lock()
@@ -162,9 +167,9 @@ class DidChangeMessage(Message):
             rows_text: List[str] = file.get_rows_text(rows[0], rows[-1])
             details['range'] = {
                 'start': {'line': rows[0], 'character': 0},
-                'end': {'line': rows[-1]+1, 'character': 0}
+                'end': {'line': rows[-1] + 1, 'character': 0}
             }
-            details['text'] = '\n'.join(rows_text)+'\n'
+            details['text'] = '\n'.join(rows_text) + '\n'
         self.params['contentChanges'] = [details]
 
 
