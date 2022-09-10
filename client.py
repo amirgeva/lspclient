@@ -4,8 +4,9 @@ import time
 import shutil
 import signal
 import re
+from io import TextIOWrapper, BufferedWriter
 from queue import Queue
-from typing import Dict, Tuple, Optional, IO
+from typing import Dict, Tuple, Optional, IO, BinaryIO
 from .binarylog import BinaryLog
 from .message import *
 
@@ -57,14 +58,17 @@ def read_message(stream):
 
 
 class RPCClient:
-    def __init__(self):
+    def __init__(self, enable_logging=False):
         self._process = sp.Popen(['clangd'], stdout=sp.PIPE, stdin=sp.PIPE,
                                  stderr=sp.PIPE)  # , preexec_fn=default_sigpipe)
         # self.process = sp.Popen(['ccls'], stdout=sp.PIPE, stdin=sp.PIPE, stderr=sp.PIPE)
         fcntl.fcntl(self._process.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
         fcntl.fcntl(self._process.stderr.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
-        self._rpc_log = open('rpc.log', 'w')
-        self._bin_log = BinaryLog('rpc_session.bin')
+        self._rpc_log: Optional[TextIOWrapper] = None
+        self._bin_log:Optional[BinaryLog] = None
+        if enable_logging:
+            self._rpc_log = open('rpc.log', 'w')
+            self._bin_log = BinaryLog('rpc_session.bin')
         self._buffer = bytearray()
         self._outgoing = Queue()
         self._terminating = False
@@ -72,12 +76,13 @@ class RPCClient:
         self._thread.start()
 
     def add_log(self, out: bool, text: str):
-        out_prefix = '>>>' if out else '<<<'
-        prefix = f'\n{out_prefix}  {time.time()}\n'
-        self._rpc_log.write(prefix)
-        self._rpc_log.write(text)
-        self._rpc_log.write('\n')
-        self._rpc_log.flush()
+        if self._rpc_log:
+            out_prefix = '>>>' if out else '<<<'
+            prefix = f'\n{out_prefix}  {time.time()}\n'
+            self._rpc_log.write(prefix)
+            self._rpc_log.write(text)
+            self._rpc_log.write('\n')
+            self._rpc_log.flush()
 
     def send_message(self, msg: Message):
         # self.add_log(True, pretty(msg.root))
@@ -94,8 +99,10 @@ class RPCClient:
             self._thread.join()
 
     def rpc_thread(self):
-        fb = open('rpc_out.log', 'wb')
-        fi = open('rpc_in.log', 'wb')
+        # fb = open('rpc_out.log', 'wb')
+        fi : Optional[BinaryIO] = None
+        if self._rpc_log:
+            fi = open('rpc_in.log', 'wb')
         try:
             while not self._terminating:
                 wait = True
@@ -104,12 +111,14 @@ class RPCClient:
                     self.add_log(False, data.decode('utf-8'))
                 data = read_message(self._process.stdout)
                 if data:
-                    fi.write(data)
-                    fi.flush()
+                    if fi:
+                        fi.write(data)
+                        fi.flush()
                     wait = False
                     if msg_log:
                         msg_log.write(f'Writing to bin log {len(data)} incoming bytes\n')
-                    self._bin_log.add(data, 0)
+                    if self._bin_log:
+                        self._bin_log.add(data, 0)
                     self._buffer.extend(data)
                     self.process_buffer()
                 while not self._outgoing.empty():
@@ -119,7 +128,8 @@ class RPCClient:
                         data = serialize(msg.root)
                         if msg_log:
                             msg_log.write(f'Writing to bin log {len(data)} outgoing bytes\n')
-                        self._bin_log.add(data, 1)
+                        if self._bin_log:
+                            self._bin_log.add(data, 1)
                         self._process.stdin.write(data)
                         self._process.stdin.flush()
                 if wait:
@@ -150,8 +160,8 @@ class RPCClient:
 
 
 class LSPClient(RPCClient):
-    def __init__(self, root_folder, compile_commands_path: str = ''):
-        super().__init__()
+    def __init__(self, root_folder, compile_commands_path: str = '', enable_logging=False):
+        super().__init__(enable_logging)
         if compile_commands_path:
             shutil.copy(compile_commands_path, root_folder)
         self.capabilities = {}
